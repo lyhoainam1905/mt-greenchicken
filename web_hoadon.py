@@ -1,5 +1,5 @@
 import streamlit as st
-import io, openpyxl, re, os, unicodedata
+import io, openpyxl, re, os, unicodedata, tempfile, urllib.request
 from pypdf import PdfReader, PdfWriter
 from reportlab.pdfgen import canvas
 from reportlab.pdfbase import pdfmetrics
@@ -24,13 +24,17 @@ def chuan_hoa_unicode(text):
     # Ép về chuẩn NFC và xóa ký tự khoảng trắng đặc biệt (\xa0)
     return unicodedata.normalize('NFC', str(text)).replace('\xa0', ' ').strip()
 
-# --- 2. NẠP FONT TIẾNG VIỆT ---
+# --- 2. NẠP FONT TIẾNG VIỆT (TỰ ĐỘNG TẢI GOOGLE FONTS KHI LÊN CLOUD) ---
 @st.cache_resource
 def load_vietnamese_font():
+    # Bước A: Tìm font có sẵn trên máy Mac / Windows / Linux
     danh_sach_font = [
-        "/System/Library/Fonts/Supplemental/Arial Bold.ttf",
-        "/Library/Fonts/Arial Bold.ttf",
-        "/System/Library/Fonts/Supplemental/Times New Roman Bold.ttf"
+        "/System/Library/Fonts/Supplemental/Arial Bold.ttf",  # Mac OS
+        "/Library/Fonts/Arial Bold.ttf",                      # Mac OS
+        "C:/Windows/Fonts/arialbd.ttf",                       # Windows
+        "C:/Windows/Fonts/tahoma.ttf",                        # Windows
+        "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", # Linux / Ubuntu
+        "/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf"
     ]
     for path in danh_sach_font:
         if os.path.exists(path):
@@ -38,7 +42,21 @@ def load_vietnamese_font():
                 pdfmetrics.registerFont(TTFont("FontTiengViet", path))
                 return "FontTiengViet", False
             except: continue
-    return "Helvetica-Bold", True
+            
+    # Bước B: KHẮC PHỤC LỖI STREAMLIT CLOUD -> Tự động tải Roboto Bold từ Google Fonts
+    try:
+        font_url = "https://raw.githubusercontent.com/google/fonts/main/ofl/roboto/Roboto-Bold.ttf"
+        font_path = os.path.join(tempfile.gettempdir(), "Roboto-Bold.ttf")
+        
+        # Tải font về thư mục tạm của máy chủ Cloud nếu chưa có
+        if not os.path.exists(font_path):
+            urllib.request.urlretrieve(font_url, font_path)
+            
+        pdfmetrics.registerFont(TTFont("FontTiengViet", font_path))
+        return "FontTiengViet", False
+    except Exception as e:
+        # Đường cùng mới dùng Helvetica (Font mặc định không có dấu)
+        return "Helvetica-Bold", True
 
 # --- 3. LẤY MÃ SO CHÍNH XÁC (NÂNG CẤP LÊN 6 SỐ HOẶC CHUỖI ĐỊNH DANH) ---
 def lay_ma_so_soan_hang(text_value):
@@ -135,7 +153,7 @@ if st.button("🚀 Bấm Để Xử Lý Dữ Liệu ", use_container_width=True,
                 ten_font, _ = load_vietnamese_font()
                 so_mapping = {}
                 
-                # 1. GỘP VÀ QUÉTS DỮ LIỆU TẤT CẢ FILE EXCEL
+                # 1. GỘP VÀ QUÉT DỮ LIỆU TẤT CẢ FILE EXCEL
                 total_rows = 0
                 for exc_file in excel_files:
                     wb = openpyxl.load_workbook(io.BytesIO(exc_file.read()))
