@@ -1,187 +1,204 @@
 import streamlit as st
-import io
-import openpyxl
-import re
-import unicodedata
+import io, openpyxl, re, os, unicodedata
 from pypdf import PdfReader, PdfWriter
 from reportlab.pdfgen import canvas
 from reportlab.pdfbase import pdfmetrics
 from reportlab.pdfbase.ttfonts import TTFont
-import os
 
-# Cấu hình giao diện Web Streamlit
-st.set_page_config(page_title="Hệ Thống Xử Lý Hóa Đơn Green Chicken", page_icon="🍗", layout="centered")
+# --- CẤU HÌNH GIAO DIỆN ---
+st.set_page_config(page_title="Green Chicken - Kênh MT ", page_icon="🍗", layout="centered")
+st.markdown("""<style>.stButton>button {background-color: #2E8B57 !important; color: white !important; font-weight: bold;} h1 {color: #2E8B57 !important;}</style>""", unsafe_allow_html=True)
 
-# Nạp Font Tiếng Việt chuẩn để không bao giờ lỗi font
+# --- LOGO & THÔNG TIN ---
+st.title("CÔNG CỤ HỖ TRỢ KÊNH MT PRO")
+st.markdown("""
+### Hỗ trợ note địa chỉ vào hoá đơn 
+* 📞 **Liên hệ hỗ trợ:** [0326.019.777](tel:0326019777)
+* 🏭 **Email:** Torres.nam@deheus.vn
+""")
+st.divider()
+
+# --- 1. CHUẨN HÓA UNICODE (CHỐNG LỖI MAC VS WINDOWS) ---
+def chuan_hoa_unicode(text):
+    if not text: return ""
+    # Ép về chuẩn NFC và xóa ký tự khoảng trắng đặc biệt (\xa0)
+    return unicodedata.normalize('NFC', str(text)).replace('\xa0', ' ').strip()
+
+# --- 2. NẠP FONT TIẾNG VIỆT ---
 @st.cache_resource
 def load_vietnamese_font():
     danh_sach_font = [
         "/System/Library/Fonts/Supplemental/Arial Bold.ttf",
-        "/System/Library/Fonts/Supplemental/Arial.ttf",
         "/Library/Fonts/Arial Bold.ttf",
-        "/System/Library/Fonts/Supplemental/Times New Roman Bold.ttf",
-        "/System/Library/Fonts/Supplemental/Tahoma.ttf",
+        "/System/Library/Fonts/Supplemental/Times New Roman Bold.ttf"
     ]
     for path in danh_sach_font:
         if os.path.exists(path):
             try:
                 pdfmetrics.registerFont(TTFont("FontTiengViet", path))
                 return "FontTiengViet", False
-            except Exception:
-                continue
+            except: continue
     return "Helvetica-Bold", True
 
-def xoa_dau_tieng_viet(text):
-    if not text:
-        return ""
-    text = unicodedata.normalize('NFD', str(text))
-    text = ''.join(c for c in text if unicodedata.category(c) != 'Mn')
-    return text.replace('Đ', 'D').replace('đ', 'd').strip()
-
-def lay_5_so_cuoi(text_value):
-    if not text_value:
-        return None
-    digits = "".join(re.findall(r'\d+', str(text_value)))
-    return digits[-5:] if len(digits) >= 5 else None
+# --- 3. LẤY MÃ SO CHÍNH XÁC (NÂNG CẤP LÊN 6 SỐ HOẶC CHUỖI ĐỊNH DANH) ---
+def lay_ma_so_soan_hang(text_value):
+    if not text_value: return None
+    text = chuan_hoa_unicode(text_value)
+    digits = "".join(re.findall(r'\d+', text))
+    # Lấy 6 số cuối để an toàn tuyệt đối chống trùng lặp
+    return digits[-6:] if len(digits) >= 6 else (digits if digits else None)
 
 # ==============================================================================
-# BỘ LỌC TÊN SIÊU THỊ THÔNG MINH (LOẠI BỎ RÁC LOGISTICS)
+# BỘ LỌC ĐA TẦNG PRO: XỬ LÝ TYPO, UNICODE, VÀ PHÂN LUỒNG ĐỊA CHỈ
 # ==============================================================================
-def loc_ten_sieu_thi(raw_note):
-    if not raw_note:
-        return ""
+def loc_ten_sieu_thi_pro(raw_note):
+    text = chuan_hoa_unicode(raw_note)
+    if not text: return ""
     
-    # 1. Danh sách từ khóa SIÊU THỊ ưu tiên giữ lại (Anh muốn thêm siêu thị nào cứ gõ vào đây)
-    tu_khoa_sieu_thi = ["FUJIMART", "BRG", "DELICA", "INTRACOM", "WINMART", "BIG C", "GO!", "AEON", "LOTTE"]
-    
-    # 2. Danh sách từ khóa RÁC LOGISTICS cần xóa bỏ
-    tu_khoa_rac = [
-        "giao xe máy", "giao xe may", "xe máy", "xe may",
-        "giao ô tô", "giao oto", "ô tô", "oto",
-        "giao hàng", "giao hang", "giao xe", "giao trước", "giao lúc", "giao"
-    ]
-    
-    note_str = str(raw_note).strip()
-    
-    # Tách câu theo dấu phẩy, dấu gạch ngang, dấu chấm phẩy hoặc dấu ngoặc đơn
-    # Ví dụ: "Giao xe máy, Fujimart Hoàng Cầu - trước 8h" -> ["Giao xe máy", "Fujimart Hoàng Cầu", "trước 8h"]
-    cac_cum_tu = re.split(r'[,;\-\(\)]', note_str)
-    
-    # Tìm cụm từ nào chứa từ khóa siêu thị (FUJIMART, BRG, DELICA...)
-    for cum in cac_cum_tu:
-        cum_clean = cum.strip()
-        cum_upper = cum_clean.upper()
-        for tk in tu_khoa_sieu_thi:
-            if tk in cum_upper:
-                # Tìm thấy siêu thị! Tiến hành dọn dẹp từ rác nếu có dính kèm trong cụm này
-                ket_qua = cum_clean
-                for rac in tu_khoa_rac:
-                    ket_qua = re.sub(re.escape(rac), "", ket_qua, flags=re.IGNORECASE).strip()
-                # Xóa dấu ký tự thừa ở đầu/cuối (ví dụ: ": Fujimart" -> "Fujimart")
-                return re.sub(r'^[:\-\s]+|[:\-\s]+$', '', ket_qua).strip()
-                
-    # Nếu trong câu không có tên siêu thị nào quen thuộc, tiến hành lọc rác trên toàn câu và lấy phần có ý nghĩa nhất
-    ket_qua = note_str
-    for rac in tu_khoa_rac:
-        ket_qua = re.sub(re.escape(rac), "", ket_qua, flags=re.IGNORECASE).strip()
+    # BƯỚC 1: SỬA LỖI GÕ SAI THƯỜNG GẶP TRONG EXCEL (TYPO DICTIONARY)
+    typo_map = {
+        "JJIMART": "FUJIMART", "FUJI ": "FUJIMART ", "WINMAT": "WINMART",
+        "DELI ": "DELICA ", "THANH DO": "THÀNH ĐÔ", "BRG ": "BRG "
+    }
+    for wrong, right in typo_map.items():
+        text = re.sub(re.escape(wrong), right, text, flags=re.IGNORECASE)
         
-    cac_cum_sach = [c.strip() for c in re.split(r'[,;\-\(\)]', ket_qua) if c.strip()]
-    return cac_cum_sach[0] if cac_cum_sach else ""
+    # BƯỚC 2: DỌN RÁC LOGISTICS CHUNG
+    # Xóa giờ giấc (VD: 5h30-7h, 07:00, trước 8h...)
+    text = re.sub(r'\d+h\d*(-\d+h\d*)?|\d+:\d+|trước\s*\d+h', ' ', text, flags=re.IGNORECASE)
+    # Xóa từ giao nhận, xuất kho
+    text = re.sub(r'Giao\s*xe\s*máy|Giao\s*xe|Giao\s*hàng|Giao|Xuất\s*kho|Xuất\s*cho|Xuất', ' ', text, flags=re.IGNORECASE)
+    
+    # BƯỚC 3: TÁCH CỤM THEO DẤU PHẨY HỌC CHẤM PHẨY
+    cac_cum = [c.strip() for c in re.split(r'[,;]', text) if c.strip()]
+    if not cac_cum: return ""
+    
+    # Danh sách thương hiệu nhận diện
+    brands = ["FUJIMART", "BRG", "DELICA", "THÀNH ĐÔ", "INTRACOM", "WINMART", "AEON", "LOTTE"]
+    
+    # BƯỚC 4: PHÂN LUỒNG XỬ LÝ
+    for cum in cac_cum:
+        cum_upper = cum.upper()
+        
+        # --- LUỒNG A: CÓ THƯƠNG HIỆU SIÊU THỊ ---
+        for b in brands:
+            if b in cum_upper:
+                # Xóa số nhà (142, 324...) để tên thương hiệu ngắn gọn
+                clean_loc = re.sub(r'\d+', ' ', cum_upper).replace(b, '').strip()
+                # Dọn ký tự thừa và khoảng trắng
+                clean_loc = re.sub(r'[\-\(\)\.]', ' ', clean_loc)
+                clean_loc = re.sub(r'\s+', ' ', clean_loc).strip()
+                
+                # Chống lặp từ (VD: LÊ DUẨN LÊ DUẨN -> LÊ DUẨN)
+                words = clean_loc.split()
+                seen, unique = set(), []
+                for w in words:
+                    if w not in seen:
+                        unique.append(w)
+                        seen.add(w)
+                loc_final = " ".join(unique)
+                
+                # Định dạng đặc quyền theo thương hiệu
+                if b == "THÀNH ĐÔ":
+                    return f"THÀNH ĐÔ - {loc_final}" if loc_final else "THÀNH ĐÔ"
+                else:
+                    return f"{b} {loc_final}".strip() if loc_final else b
+                    
+    # --- LUỒNG B: ĐỊA CHỈ ĐỘC LẬP (KHÔNG CÓ THƯƠNG HIỆU - VD: SỐ 778 ĐƯỜNG LÁNG) ---
+    # KHÔNG XÓA CON SỐ! Giữ nguyên số nhà, chỉ lấy cụm đầu tiên có ý nghĩa
+    for cum in cac_cum:
+        cum_clean = re.sub(r'\s+', ' ', cum).strip()
+        # Loại bỏ các cụm chỉ là tên quận/thành phố đứng trơ trọi
+        if len(cum_clean) > 4 and not any(q in cum_clean.upper() for q in ["TP. HÀ NỘI", "HÀ NỘI", "VIỆT NAM", "Q. ĐỐNG ĐA"]):
+            return cum_clean.upper()
+            
+    return cac_cum[0].upper().strip()
 # ==============================================================================
 
-# --- GIAO DIỆN TRANG WEB ---
-st.title("🍗 CỔNG XỬ LÝ HÓA ĐƠN TỰ ĐỘNG")
-st.markdown("---")
-st.markdown("### 1️⃣ Tải dữ liệu lên")
-
+# --- GIAO DIỆN TẢI FILE ---
+st.markdown("### 1️⃣ Tải dữ liệu lên (Hỗ trợ gộp nhiều file Excel)")
 col1, col2 = st.columns(2)
 with col1:
-    excel_file = st.file_uploader("📊 Chọn file Excel từ Admin (.xlsx)", type=["xlsx"])
+    excel_files = st.file_uploader("📊 Chọn các file Excel (.xlsx)", type=["xlsx"], accept_multiple_files=True)
 with col2:
-    pdf_files = st.file_uploader("📄 Chọn các file Hóa Đơn Lẻ (.pdf)", type=["pdf"], accept_multiple_files=True)
+    pdf_files = st.file_uploader("📄 Chọn các file Hóa Đơn PDF (.pdf)", type=["pdf"], accept_multiple_files=True)
 
 st.markdown("---")
 
-# Nút bấm xử lý
-if st.button("🚀 TIẾN HÀNH ĐÓNG DẤU & GỘP HÓA ĐƠN", use_container_width=True, type="primary"):
-    if not excel_file or not pdf_files:
-        st.error("⚠️ Vui lòng tải lên đầy đủ file Excel và ít nhất 1 file Hóa Đơn PDF!")
+# --- XỬ LÝ DỮ LIỆU ---
+if st.button("🚀 Bấm Để Xử Lý Dữ Liệu ", use_container_width=True, type="primary"):
+    if not excel_files or not pdf_files:
+        st.error("⚠️ Vui lòng tải lên ít nhất 1 file Excel và 1 file Hóa Đơn PDF!")
     else:
-        with st.spinner("⏳ Hệ thống đang lọc siêu thị (Fujimart, BRG, Delica...) & đóng dấu..."):
+        with st.spinner("⏳ Đang xử lý dữ liệu..."):
             try:
-                # 1. Đọc Excel
-                wb = openpyxl.load_workbook(io.BytesIO(excel_file.read()))
-                sheet = wb.active
-                
-                header_row = [str(cell).strip() if cell is not None else "" for cell in next(sheet.iter_rows(min_row=1, max_row=1, values_only=True))]
-                note_col_idx = -1
-                for idx, header in enumerate(header_row):
-                    h_upper = header.upper()
-                    if "NOTE" in h_upper or "GIAO" in h_upper or "ĐỊA CHỈ" in h_upper or "STORE" in h_upper:
-                        note_col_idx = idx
-                        break
-                if note_col_idx == -1:
-                    note_col_idx = 2 if len(header_row) >= 3 else 1
-                
-                ten_font, can_xoa_dau = load_vietnamese_font()
+                ten_font, _ = load_vietnamese_font()
                 so_mapping = {}
-                for row in sheet.iter_rows(min_row=2, values_only=True):
-                    if row[0] is not None and len(row) > note_col_idx and row[note_col_idx] is not None:
-                        so_number = str(row[0]).strip()
-                        raw_note = str(row[note_col_idx]).strip()
-                        
-                        # ÁP DỤNG BỘ LỌC TÊN SIÊU THỊ THÔNG MINH
-                        clean_store_name = loc_ten_sieu_thi(raw_note)
-                        
-                        if can_xoa_dau:
-                            clean_store_name = xoa_dau_tieng_viet(clean_store_name)
-                        excel_5 = lay_5_so_cuoi(so_number)
-                        if excel_5 and clean_store_name:
-                            so_mapping[excel_5] = clean_store_name
                 
-                # 2. Quét và Đóng dấu PDF
+                # 1. GỘP VÀ QUÉTS DỮ LIỆU TẤT CẢ FILE EXCEL
+                total_rows = 0
+                for exc_file in excel_files:
+                    wb = openpyxl.load_workbook(io.BytesIO(exc_file.read()))
+                    sheet = wb.active
+                    
+                    header_row = [chuan_hoa_unicode(cell).upper() if cell is not None else "" for cell in next(sheet.iter_rows(min_row=1, max_row=1, values_only=True))]
+                    note_col_idx = -1
+                    for idx, h_upper in enumerate(header_row):
+                        if any(k in h_upper for k in ["NOTE", "GIAO", "ĐỊA CHỈ", "STORE"]):
+                            note_col_idx = idx
+                            break
+                    if note_col_idx == -1: note_col_idx = 2 if len(header_row) >= 3 else 1
+                    
+                    for row in sheet.iter_rows(min_row=2, values_only=True):
+                        if row[0] is not None and len(row) > note_col_idx and row[note_col_idx] is not None:
+                            total_rows += 1
+                            so_number = lay_ma_so_soan_hang(row[0])
+                            raw_note = row[note_col_idx]
+                            clean_store_name = loc_ten_sieu_thi_pro(raw_note)
+                            
+                            if so_number and clean_store_name:
+                                so_mapping[so_number] = clean_store_name
+
+                # 2. ĐÓNG DẤU VÀO PDF
                 final_writer = PdfWriter()
+                stamped_count = 0
+                
                 for pdf_file in pdf_files:
                     reader = PdfReader(io.BytesIO(pdf_file.read()))
                     for page in reader.pages:
-                        page_text = page.extract_text() or ""
+                        page_text = chuan_hoa_unicode(page.extract_text() or "")
                         all_digits = re.findall(r'\d+', page_text)
+                        
                         matched_store = None
                         for num_str in all_digits:
-                            if len(num_str) >= 5:
-                                invoice_5 = num_str[-5:]
-                                if invoice_5 in so_mapping:
-                                    matched_store = so_mapping[invoice_5]
+                            if len(num_str) >= 6:
+                                ma_so_pdf = num_str[-6:]
+                                if ma_so_pdf in so_mapping:
+                                    matched_store = so_mapping[ma_so_pdf]
                                     break
                         
                         if matched_store:
+                            stamped_count += 1
                             mediabox = page.mediabox
                             width, height = float(mediabox.width), float(mediabox.height)
                             packet = io.BytesIO()
                             can = canvas.Canvas(packet, pagesize=(width, height))
                             can.setFillColorRGB(1, 0, 0) # Màu đỏ rực
-                            can.setFont(ten_font, 18)
-                            
-                            # Căn chính giữa đỉnh đầu
-                            can.drawCentredString(width / 2.0, height - 28, matched_store.upper())
+                            can.setFont(ten_font, 16) 
+                            can.drawCentredString(width / 2.0, height - 25, matched_store)
                             can.save()
                             
                             packet.seek(0)
-                            new_pdf = PdfReader(packet)
-                            page.merge_page(new_pdf.pages[0])
+                            page.merge_page(PdfReader(packet).pages[0])
                             
                         final_writer.add_page(page)
                 
-                # Xuất file ra bộ nhớ tạm của Web
+                # 3. XUẤT KẾT QUẢ VÀ BÁO CÁO THỐNG KÊ
                 output_pdf_stream = io.BytesIO()
                 final_writer.write(output_pdf_stream)
                 output_pdf_stream.seek(0)
                 
-                # 3. Hiển thị kết quả thành công
-                st.success(f"🎉 ĐÃ XỬ LÝ XONG {len(pdf_files)} FILE HÓA ĐƠN! CHỈ LẤY ĐÚNG TÊN SIÊU THỊ!")
-                st.markdown("---")
-                
-                # Nút tải file về cho điện thoại / máy tính
+                st.success(f"🎉 HOÀN TẤT XỬ LÝ! {len(excel_files)} file Excel ({total_rows} dòng). Đóng dấu thành công {stamped_count} trang hóa đơn!")
                 st.download_button(
                     label="📥 BẤM VÀO ĐÂY ĐỂ TẢI HÓA ĐƠN HOÀN CHỈNH VỀ MÁY",
                     data=output_pdf_stream,
@@ -189,6 +206,5 @@ if st.button("🚀 TIẾN HÀNH ĐÓNG DẤU & GỘP HÓA ĐƠN", use_container_
                     mime="application/pdf",
                     use_container_width=True
                 )
-                
             except Exception as e:
-                st.error(f"⚠️ Có lỗi xảy ra trong quá trình xử lý: {str(e)}")
+                st.error(f"⚠️ Có lỗi kỹ thuật xảy ra: {str(e)}")
