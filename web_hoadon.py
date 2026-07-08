@@ -32,8 +32,7 @@ def load_vietnamese_font():
         "/System/Library/Fonts/Supplemental/Arial Bold.ttf",  # Mac OS
         "/Library/Fonts/Arial Bold.ttf",                      # Mac OS
         "C:/Windows/Fonts/arialbd.ttf",                       # Windows
-        "C:/Windows/Fonts/tahoma.ttf",                        # Windows
-        "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", # Linux / Ubuntu
+        "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", # Linux / Ubuntu Cloud
         "/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf"
     ]
     for path in danh_sach_font:
@@ -43,19 +42,24 @@ def load_vietnamese_font():
                 return "FontTiengViet", False
             except: continue
             
-    # Bước B: KHẮC PHỤC LỖI STREAMLIT CLOUD -> Tự động tải Roboto Bold từ Google Fonts
+    # Bước B: KHẮC PHỤC LỖI STREAMLIT CLOUD -> Tự động tải Roboto Bold chuẩn Tiếng Việt
     try:
         font_url = "https://raw.githubusercontent.com/google/fonts/main/ofl/roboto/Roboto-Bold.ttf"
         font_path = os.path.join(tempfile.gettempdir(), "Roboto-Bold.ttf")
         
-        # Tải font về thư mục tạm của máy chủ Cloud nếu chưa có
+        # Tải font về thư mục tạm của máy chủ Cloud với User-Agent chống chặn truy cập
         if not os.path.exists(font_path):
-            urllib.request.urlretrieve(font_url, font_path)
+            req = urllib.request.Request(
+                font_url, 
+                headers={'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'}
+            )
+            with urllib.request.urlopen(req) as response, open(font_path, 'wb') as out_file:
+                out_file.write(response.read())
             
         pdfmetrics.registerFont(TTFont("FontTiengViet", font_path))
         return "FontTiengViet", False
     except Exception as e:
-        # Đường cùng mới dùng Helvetica (Font mặc định không có dấu)
+        # Đường cùng mới dùng Helvetica
         return "Helvetica-Bold", True
 
 # --- 3. LẤY MÃ SO CHÍNH XÁC (NÂNG CẤP LÊN 6 SỐ HOẶC CHUỖI ĐỊNH DANH) ---
@@ -148,12 +152,12 @@ if st.button("🚀 Bấm Để Xử Lý Dữ Liệu ", use_container_width=True,
     if not excel_files or not pdf_files:
         st.error("⚠️ Vui lòng tải lên ít nhất 1 file Excel và 1 file Hóa Đơn PDF!")
     else:
-        with st.spinner("⏳ Đang xử lý dữ liệu..."):
+        with st.spinner("⏳ Đang nạp Font Tiếng Việt Cloud, gộp Excel và xử lý đóng dấu tốc độ cao..."):
             try:
                 ten_font, _ = load_vietnamese_font()
                 so_mapping = {}
                 
-                # 1. GỘP VÀ QUÉT DỮ LIỆU TẤT CẢ FILE EXCEL
+                # 1. GỘP VÀ QUÉTS DỮ LIỆU TẤT CẢ FILE EXCEL
                 total_rows = 0
                 for exc_file in excel_files:
                     wb = openpyxl.load_workbook(io.BytesIO(exc_file.read()))
@@ -199,30 +203,4 @@ if st.button("🚀 Bấm Để Xử Lý Dữ Liệu ", use_container_width=True,
                             stamped_count += 1
                             mediabox = page.mediabox
                             width, height = float(mediabox.width), float(mediabox.height)
-                            packet = io.BytesIO()
-                            can = canvas.Canvas(packet, pagesize=(width, height))
-                            can.setFillColorRGB(1, 0, 0) # Màu đỏ rực
-                            can.setFont(ten_font, 16) 
-                            can.drawCentredString(width / 2.0, height - 25, matched_store)
-                            can.save()
-                            
-                            packet.seek(0)
-                            page.merge_page(PdfReader(packet).pages[0])
-                            
-                        final_writer.add_page(page)
-                
-                # 3. XUẤT KẾT QUẢ VÀ BÁO CÁO THỐNG KÊ
-                output_pdf_stream = io.BytesIO()
-                final_writer.write(output_pdf_stream)
-                output_pdf_stream.seek(0)
-                
-                st.success(f"🎉 HOÀN TẤT XỬ LÝ! {len(excel_files)} file Excel ({total_rows} dòng). Đóng dấu thành công {stamped_count} trang hóa đơn!")
-                st.download_button(
-                    label="📥 BẤM VÀO ĐÂY ĐỂ TẢI HÓA ĐƠN HOÀN CHỈNH VỀ MÁY",
-                    data=output_pdf_stream,
-                    file_name="TAT_CA_HOA_DON_DE_IN.pdf",
-                    mime="application/pdf",
-                    use_container_width=True
-                )
-            except Exception as e:
-                st.error(f"⚠️ Có lỗi kỹ thuật xảy ra: {str(e)}")
+                            packet =
