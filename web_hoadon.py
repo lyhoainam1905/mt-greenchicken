@@ -21,7 +21,6 @@ st.divider()
 # --- 1. CHUẨN HÓA UNICODE (CHỐNG LỖI MAC VS WINDOWS) ---
 def chuan_hoa_unicode(text):
     if not text: return ""
-    # Ép về chuẩn NFC và xóa ký tự khoảng trắng đặc biệt (\xa0)
     return unicodedata.normalize('NFC', str(text)).replace('\xa0', ' ').strip()
 
 # --- 2. NẠP FONT TIẾNG VIỆT (TỰ ĐỘNG TẢI GOOGLE FONTS KHI LÊN CLOUD) ---
@@ -58,16 +57,15 @@ def load_vietnamese_font():
             
         pdfmetrics.registerFont(TTFont("FontTiengViet", font_path))
         return "FontTiengViet", False
-    except Exception as e:
+    except Exception:
         # Đường cùng mới dùng Helvetica
         return "Helvetica-Bold", True
 
-# --- 3. LẤY MÃ SO CHÍNH XÁC (NÂNG CẤP LÊN 6 SỐ HOẶC CHUỖI ĐỊNH DANH) ---
+# --- 3. LẤY MÃ SO CHÍNH XÁC (NÂNG CẤP LÊN 6 SỐ) ---
 def lay_ma_so_soan_hang(text_value):
     if not text_value: return None
     text = chuan_hoa_unicode(text_value)
     digits = "".join(re.findall(r'\d+', text))
-    # Lấy 6 số cuối để an toàn tuyệt đối chống trùng lặp
     return digits[-6:] if len(digits) >= 6 else (digits if digits else None)
 
 # ==============================================================================
@@ -77,7 +75,7 @@ def loc_ten_sieu_thi_pro(raw_note):
     text = chuan_hoa_unicode(raw_note)
     if not text: return ""
     
-    # BƯỚC 1: SỬA LỖI GÕ SAI THƯỜNG GẶP TRONG EXCEL (TYPO DICTIONARY)
+    # BƯỚC 1: SỬA LỖI GÕ SAI THƯỜNG GẶP TRONG EXCEL
     typo_map = {
         "JJIMART": "FUJIMART", "FUJI ": "FUJIMART ", "WINMAT": "WINMART",
         "DELI ": "DELICA ", "THANH DO": "THÀNH ĐÔ", "BRG ": "BRG "
@@ -86,16 +84,13 @@ def loc_ten_sieu_thi_pro(raw_note):
         text = re.sub(re.escape(wrong), right, text, flags=re.IGNORECASE)
         
     # BƯỚC 2: DỌN RÁC LOGISTICS CHUNG
-    # Xóa giờ giấc (VD: 5h30-7h, 07:00, trước 8h...)
     text = re.sub(r'\d+h\d*(-\d+h\d*)?|\d+:\d+|trước\s*\d+h', ' ', text, flags=re.IGNORECASE)
-    # Xóa từ giao nhận, xuất kho
     text = re.sub(r'Giao\s*xe\s*máy|Giao\s*xe|Giao\s*hàng|Giao|Xuất\s*kho|Xuất\s*cho|Xuất', ' ', text, flags=re.IGNORECASE)
     
     # BƯỚC 3: TÁCH CỤM THEO DẤU PHẨY HỌC CHẤM PHẨY
     cac_cum = [c.strip() for c in re.split(r'[,;]', text) if c.strip()]
     if not cac_cum: return ""
     
-    # Danh sách thương hiệu nhận diện
     brands = ["FUJIMART", "BRG", "DELICA", "THÀNH ĐÔ", "INTRACOM", "WINMART", "AEON", "LOTTE"]
     
     # BƯỚC 4: PHÂN LUỒNG XỬ LÝ
@@ -105,13 +100,10 @@ def loc_ten_sieu_thi_pro(raw_note):
         # --- LUỒNG A: CÓ THƯƠNG HIỆU SIÊU THỊ ---
         for b in brands:
             if b in cum_upper:
-                # Xóa số nhà (142, 324...) để tên thương hiệu ngắn gọn
                 clean_loc = re.sub(r'\d+', ' ', cum_upper).replace(b, '').strip()
-                # Dọn ký tự thừa và khoảng trắng
                 clean_loc = re.sub(r'[\-\(\)\.]', ' ', clean_loc)
                 clean_loc = re.sub(r'\s+', ' ', clean_loc).strip()
                 
-                # Chống lặp từ (VD: LÊ DUẨN LÊ DUẨN -> LÊ DUẨN)
                 words = clean_loc.split()
                 seen, unique = set(), []
                 for w in words:
@@ -120,17 +112,14 @@ def loc_ten_sieu_thi_pro(raw_note):
                         seen.add(w)
                 loc_final = " ".join(unique)
                 
-                # Định dạng đặc quyền theo thương hiệu
                 if b == "THÀNH ĐÔ":
                     return f"THÀNH ĐÔ - {loc_final}" if loc_final else "THÀNH ĐÔ"
                 else:
                     return f"{b} {loc_final}".strip() if loc_final else b
                     
-    # --- LUỒNG B: ĐỊA CHỈ ĐỘC LẬP (KHÔNG CÓ THƯƠNG HIỆU - VD: SỐ 778 ĐƯỜNG LÁNG) ---
-    # KHÔNG XÓA CON SỐ! Giữ nguyên số nhà, chỉ lấy cụm đầu tiên có ý nghĩa
+    # --- LUỒNG B: ĐỊA CHỈ ĐỘC LẬP (VD: SỐ 778 ĐƯỜNG LÁNG) ---
     for cum in cac_cum:
         cum_clean = re.sub(r'\s+', ' ', cum).strip()
-        # Loại bỏ các cụm chỉ là tên quận/thành phố đứng trơ trọi
         if len(cum_clean) > 4 and not any(q in cum_clean.upper() for q in ["TP. HÀ NỘI", "HÀ NỘI", "VIỆT NAM", "Q. ĐỐNG ĐA"]):
             return cum_clean.upper()
             
@@ -157,7 +146,6 @@ if st.button("🚀 Bấm Để Xử Lý Dữ Liệu ", use_container_width=True,
                 ten_font, _ = load_vietnamese_font()
                 so_mapping = {}
                 
-                # 1. GỘP VÀ QUÉTS DỮ LIỆU TẤT CẢ FILE EXCEL
                 total_rows = 0
                 for exc_file in excel_files:
                     wb = openpyxl.load_workbook(io.BytesIO(exc_file.read()))
@@ -181,7 +169,6 @@ if st.button("🚀 Bấm Để Xử Lý Dữ Liệu ", use_container_width=True,
                             if so_number and clean_store_name:
                                 so_mapping[so_number] = clean_store_name
 
-                # 2. ĐÓNG DẤU VÀO PDF
                 final_writer = PdfWriter()
                 stamped_count = 0
                 
@@ -203,4 +190,29 @@ if st.button("🚀 Bấm Để Xử Lý Dữ Liệu ", use_container_width=True,
                             stamped_count += 1
                             mediabox = page.mediabox
                             width, height = float(mediabox.width), float(mediabox.height)
-                            packet =
+                            packet = io.BytesIO()
+                            can = canvas.Canvas(packet, pagesize=(width, height))
+                            can.setFillColorRGB(1, 0, 0) # Màu đỏ rực
+                            can.setFont(ten_font, 16) 
+                            can.drawCentredString(width / 2.0, height - 25, matched_store)
+                            can.save()
+                            
+                            packet.seek(0)
+                            page.merge_page(PdfReader(packet).pages[0])
+                            
+                        final_writer.add_page(page)
+                
+                output_pdf_stream = io.BytesIO()
+                final_writer.write(output_pdf_stream)
+                output_pdf_stream.seek(0)
+                
+                st.success(f"🎉 HOÀN TẤT XỬ LÝ! {len(excel_files)} file Excel ({total_rows} dòng). Đóng dấu thành công {stamped_count} trang hóa đơn!")
+                st.download_button(
+                    label="📥 BẤM VÀO ĐÂY ĐỂ TẢI HÓA ĐƠN HOÀN CHỈNH VỀ MÁY",
+                    data=output_pdf_stream,
+                    file_name="TAT_CA_HOA_DON_DE_IN.pdf",
+                    mime="application/pdf",
+                    use_container_width=True
+                )
+            except Exception as e:
+                st.error(f"⚠️ Có lỗi kỹ thuật xảy ra: {str(e)}")
