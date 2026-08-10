@@ -1,12 +1,5 @@
 import streamlit as st
-import io
-import openpyxl
-import re
-import os
-import unicodedata
-import tempfile
-import urllib.request
-import ssl
+import io, openpyxl, re, os, unicodedata, tempfile, urllib.request, ssl, zipfile
 from pypdf import PdfReader, PdfWriter
 from reportlab.pdfgen import canvas
 from reportlab.pdfbase import pdfmetrics
@@ -19,7 +12,7 @@ st.markdown("""<style>.stButton>button {background-color: #2E8B57 !important; co
 # --- LOGO & THÔNG TIN ---
 st.title("CÔNG CỤ HỖ TRỢ KÊNH MT PRO")
 st.markdown("""
-### Hỗ trợ note địa chỉ vào hoá đơn 
+### Hỗ trợ note địa chỉ vào hoá đơn (Đa năng - Chống lỗi Mobile)
 * 📞 **Liên hệ hỗ trợ:** [0326.019.777](tel:0326019777)
 * 🏭 **Email:** Torres.nam@deheus.vn
 """)
@@ -30,10 +23,9 @@ def chuan_hoa_unicode(text):
     if not text: return ""
     return unicodedata.normalize('NFC', str(text)).replace('\xa0', ' ').strip()
 
-# --- 2. NẠP FONT TIẾNG VIỆT (VƯỢT TƯỜNG LỬA BẢO MẬT CLOUD) ---
+# --- 2. NẠP FONT TIẾNG VIỆT (VƯỢT TƯỜNG LỬA CLOUD) ---
 @st.cache_resource
 def load_vietnamese_font():
-    # Ưu tiên 1: Tải font bằng urllib với SSL Bypass (Vượt tường lửa Streamlit Cloud)
     font_path = os.path.join(tempfile.gettempdir(), "Roboto-Bold.ttf")
     if not os.path.exists(font_path):
         try:
@@ -52,7 +44,6 @@ def load_vietnamese_font():
             return "FontTiengViet"
         except: pass
 
-    # Ưu tiên 2: Tìm font anh Nam tự upload lên Github (Nếu có)
     local_fonts = ["Roboto-Bold.ttf", "Arial.ttf", "arialbd.ttf", "Arial Bold.ttf"]
     for lf in local_fonts:
         if os.path.exists(lf):
@@ -61,7 +52,6 @@ def load_vietnamese_font():
                 return "FontTiengViet"
             except: pass
 
-    # Ưu tiên 3: Dùng font hệ thống nếu đang chạy trên máy Mac/Win
     system_fonts = [
         "/System/Library/Fonts/Supplemental/Arial Bold.ttf",
         "/Library/Fonts/Arial Bold.ttf",
@@ -73,23 +63,15 @@ def load_vietnamese_font():
                 pdfmetrics.registerFont(TTFont("FontTiengViet", path))
                 return "FontTiengViet"
             except: continue
-
-    # Nếu hoàn toàn thất bại: Báo lỗi chứ KIÊN QUYẾT KHÔNG DÙNG FONT TIẾNG ANH
+            
     return None
 
-# --- 3. LẤY MÃ SO CHÍNH XÁC ---
-def lay_ma_so_soan_hang(text_value):
-    if not text_value: return None
-    text = chuan_hoa_unicode(text_value)
-    digits = "".join(re.findall(r'\d+', text))
-    return digits[-6:] if len(digits) >= 6 else (digits if digits else None)
-
-# --- 4. BỘ LỌC ĐỊA CHỈ SIÊU THỊ ---
+# --- 3. BỘ LỌC TÊN SIÊU THỊ / ĐỊA CHỈ CHUẨN ---
 def loc_ten_sieu_thi_pro(raw_note):
     text = chuan_hoa_unicode(raw_note)
     if not text: return ""
     
-    typo_map = {"JJIMART": "FUJIMART", "FUJI ": "FUJIMART ", "WINMAT": "WINMART", "DELI ": "DELICA ", "THANH DO": "THÀNH ĐÔ", "BRG ": "BRG "}
+    typo_map = {"JJIMART": "FUJIMART", "FUJI MART": "FUJIMART", "FUJI ": "FUJIMART ", "WIN MART": "WINMART", "WINMAT": "WINMART", "DELI ": "DELICA ", "THANH DO": "THÀNH ĐÔ", "BRG ": "BRG "}
     for wrong, right in typo_map.items():
         text = re.sub(re.escape(wrong), right, text, flags=re.IGNORECASE)
         
@@ -100,7 +82,6 @@ def loc_ten_sieu_thi_pro(raw_note):
     if not cac_cum: return ""
     
     brands = ["FUJIMART", "BRG", "DELICA", "THÀNH ĐÔ", "INTRACOM", "WINMART", "AEON", "LOTTE"]
-    
     for cum in cac_cum:
         cum_upper = cum.upper()
         for b in brands:
@@ -108,7 +89,6 @@ def loc_ten_sieu_thi_pro(raw_note):
                 clean_loc = re.sub(r'\d+', ' ', cum_upper).replace(b, '').strip()
                 clean_loc = re.sub(r'[\-\(\)\.]', ' ', clean_loc)
                 clean_loc = re.sub(r'\s+', ' ', clean_loc).strip()
-                
                 words = clean_loc.split()
                 seen, unique = set(), []
                 for w in words:
@@ -116,11 +96,7 @@ def loc_ten_sieu_thi_pro(raw_note):
                         unique.append(w)
                         seen.add(w)
                 loc_final = " ".join(unique)
-                
-                if b == "THÀNH ĐÔ":
-                    return f"THÀNH ĐÔ - {loc_final}" if loc_final else "THÀNH ĐÔ"
-                else:
-                    return f"{b} {loc_final}".strip() if loc_final else b
+                return f"THÀNH ĐÔ - {loc_final}" if (b == "THÀNH ĐÔ" and loc_final) else (f"{b} {loc_final}".strip() if loc_final else b)
                     
     for cum in cac_cum:
         cum_clean = re.sub(r'\s+', ' ', cum).strip()
@@ -129,75 +105,122 @@ def loc_ten_sieu_thi_pro(raw_note):
             
     return cac_cum[0].upper().strip()
 
+# --- 4. THUẬT TOÁN QUÉT EXCEL ĐA NĂNG ---
+def quet_excel_da_nang(exc_file_bytes):
+    wb = openpyxl.load_workbook(io.BytesIO(exc_file_bytes), data_only=True)
+    so_mapping = {}
+    total_rows = 0
+    
+    for sheet_name in wb.sheetnames:
+        sheet = wb[sheet_name]
+        
+        so_col_idx, note_col_idx = -1, -1
+        for row in sheet.iter_rows(min_row=1, max_row=15, values_only=True):
+            for c_idx, val in enumerate(row):
+                if not val: continue
+                val_str = str(val).upper()
+                if any(k in val_str for k in ["MÃ SỐ SO", "SO ĐƠN HÀNG", "MÃ SO", "ĐƠN HÀNG", "ORDER"]):
+                    if so_col_idx == -1: so_col_idx = c_idx
+                if any(k in val_str for k in ["ĐỊA CHỈ", "GHI CHÚ", "NOTE", "GIAO HÀNG", "STORE", "SIÊU THỊ", "TÊN KH"]):
+                    if note_col_idx == -1 or any(x in val_str for x in ["ĐỊA CHỈ", "NOTE", "GHI CHÚ"]): 
+                        note_col_idx = c_idx
+        
+        for row in sheet.iter_rows(min_row=1, values_only=True):
+            so_val, note_val = None, None
+            if so_col_idx != -1 and len(row) > so_col_idx: so_val = row[so_col_idx]
+            if note_col_idx != -1 and len(row) > note_col_idx: note_val = row[note_col_idx]
+                
+            if not so_val or not any(char.isdigit() for char in str(so_val)):
+                for cell in row:
+                    if cell and ("GCN/SO" in str(cell).upper() or "SO/" in str(cell).upper()):
+                        so_val = cell
+                        break
+            
+            if so_val and not note_val:
+                max_len = 0
+                for cell in row:
+                    if cell and cell != so_val and isinstance(cell, str) and len(cell) > max_len:
+                        max_len = len(cell)
+                        note_val = cell
+
+            if so_val and note_val:
+                digits = "".join(re.findall(r'\d+', str(so_val)))
+                if len(digits) >= 6:
+                    so_key = digits[-6:]
+                    clean_store = loc_ten_sieu_thi_pro(note_val)
+                    if clean_store and len(clean_store) > 1:
+                        so_mapping[so_key] = clean_store
+                        total_rows += 1
+
+    return so_mapping, total_rows
+
 # --- 5. GIAO DIỆN TẢI FILE ---
-st.markdown("### 1️⃣ Tải dữ liệu lên (Hỗ trợ gộp nhiều file Excel)")
+st.markdown("### 1️⃣ Tải dữ liệu lên (Hỗ trợ ZIP cho điện thoại)")
 col1, col2 = st.columns(2)
 with col1:
-    excel_files = st.file_uploader("📊 Chọn các file Excel (.xlsx)", type=["xlsx"], accept_multiple_files=True)
+    excel_files = st.file_uploader("📊 Chọn file Excel (.xlsx)", type=["xlsx"], accept_multiple_files=True)
 with col2:
-    pdf_files = st.file_uploader("📄 Chọn các file Hóa Đơn PDF (.pdf)", type=["pdf"], accept_multiple_files=True)
+    # Đã thêm "zip" vào định dạng hỗ trợ
+    pdf_files = st.file_uploader("📄 Chọn file PDF hoặc ZIP", type=["pdf", "zip"], accept_multiple_files=True)
 
 st.markdown("---")
 
 # --- 6. XỬ LÝ DỮ LIỆU ---
-if st.button("🚀 Bấm Để Xử Lý Dữ Liệu ", use_container_width=True, type="primary"):
+if st.button("🚀 Bấm Để Xử Lý Dữ Liệu", use_container_width=True, type="primary"):
     if not excel_files or not pdf_files:
-        st.error("⚠️ Vui lòng tải lên ít nhất 1 file Excel và 1 file Hóa Đơn PDF!")
+        st.error("⚠️ Vui lòng tải lên ít nhất 1 file Excel và 1 file Hóa Đơn PDF (hoặc ZIP)!")
     else:
-        # CHỐT CHẶN FONT: Kiểm tra font ngay trước khi chạy
         ten_font = load_vietnamese_font()
         if not ten_font:
-            st.error("🚨 LỖI MÁY CHỦ CLOUD: Tường lửa đang chặn tải Font Tiếng Việt!")
-            st.warning("🛠 **CÁCH KHẮC PHỤC DỨT ĐIỂM 100%:**\n\nAnh Nam hãy copy file font **Arial.ttf** (hoặc Roboto.ttf) từ máy tính của anh, rồi Upload thẳng lên **cùng chỗ** với file `web_hoadon.py` trên GitHub. Hệ thống sẽ tự động lấy file font anh đăng lên để dùng!")
-            st.stop() # Dừng hẳn, không cho in PDF lỗi
+            st.error("🚨 LỖI CLOUD: Không tải được Font Tiếng Việt. Vui lòng up file Roboto-Bold.ttf lên Github.")
+            st.stop()
             
-        with st.spinner("⏳ Đang xử lý gộp Excel và đóng dấu PDF..."):
+        with st.spinner("⏳ Đang xử lý dữ liệu và đóng dấu PDF..."):
             try:
+                # Quét Excel
                 so_mapping = {}
                 total_rows = 0
-                
                 for exc_file in excel_files:
-                    wb = openpyxl.load_workbook(io.BytesIO(exc_file.read()))
-                    sheet = wb.active
-                    header_row = [chuan_hoa_unicode(cell).upper() if cell is not None else "" for cell in next(sheet.iter_rows(min_row=1, max_row=1, values_only=True))]
-                    
-                    note_col_idx = -1
-                    for idx, h_upper in enumerate(header_row):
-                        if any(k in h_upper for k in ["NOTE", "GIAO", "ĐỊA CHỈ", "STORE"]):
-                            note_col_idx = idx
-                            break
-                    if note_col_idx == -1: note_col_idx = 2 if len(header_row) >= 3 else 1
-                    
-                    for row in sheet.iter_rows(min_row=2, values_only=True):
-                        if row[0] is not None and len(row) > note_col_idx and row[note_col_idx] is not None:
-                            total_rows += 1
-                            so_number = lay_ma_so_soan_hang(row[0])
-                            clean_store_name = loc_ten_sieu_thi_pro(row[note_col_idx])
-                            if so_number and clean_store_name:
-                                so_mapping[so_number] = clean_store_name
+                    mapping_part, rows_count = quet_excel_da_nang(exc_file.read())
+                    so_mapping.update(mapping_part)
+                    total_rows += rows_count
 
+                # Lọc file PDF (Bao gồm cả việc bung nén file ZIP)
+                all_pdf_data = []
+                for file_upload in pdf_files:
+                    if file_upload.name.lower().endswith('.zip'):
+                        with zipfile.ZipFile(io.BytesIO(file_upload.read())) as z:
+                            for file_info in z.infolist():
+                                # Chỉ lấy file PDF và bỏ qua các file rác của MacOS nếu có
+                                if file_info.filename.lower().endswith('.pdf') and not file_info.filename.startswith('__MACOSX'):
+                                    all_pdf_data.append(z.read(file_info.filename))
+                    elif file_upload.name.lower().endswith('.pdf'):
+                        all_pdf_data.append(file_upload.read())
+
+                if not all_pdf_data:
+                    st.error("⚠️ Không tìm thấy file PDF nào hợp lệ để xử lý!")
+                    st.stop()
+
+                # Đóng dấu PDF
                 final_writer = PdfWriter()
                 stamped_count = 0
                 
-                for pdf_file in pdf_files:
-                    reader = PdfReader(io.BytesIO(pdf_file.read()))
+                for pdf_bytes in all_pdf_data:
+                    reader = PdfReader(io.BytesIO(pdf_bytes))
                     for page in reader.pages:
                         page_text = chuan_hoa_unicode(page.extract_text() or "")
                         all_digits = re.findall(r'\d+', page_text)
                         
                         matched_store = None
                         for num_str in all_digits:
-                            if len(num_str) >= 6:
-                                ma_so_pdf = num_str[-6:]
-                                if ma_so_pdf in so_mapping:
-                                    matched_store = so_mapping[ma_so_pdf]
-                                    break
+                            if len(num_str) >= 6 and num_str[-6:] in so_mapping:
+                                matched_store = so_mapping[num_str[-6:]]
+                                break
                         
                         if matched_store:
                             stamped_count += 1
                             mediabox = page.mediabox
-                            width = float(mediabox.width)
-                            height = float(mediabox.height)
+                            width, height = float(mediabox.width), float(mediabox.height)
                             
                             packet = io.BytesIO()
                             can = canvas.Canvas(packet, pagesize=(width, height))
@@ -207,8 +230,7 @@ if st.button("🚀 Bấm Để Xử Lý Dữ Liệu ", use_container_width=True,
                             can.save()
                             
                             packet.seek(0)
-                            new_pdf = PdfReader(packet)
-                            page.merge_page(new_pdf.pages[0])
+                            page.merge_page(PdfReader(packet).pages[0])
                             
                         final_writer.add_page(page)
                 
@@ -216,7 +238,7 @@ if st.button("🚀 Bấm Để Xử Lý Dữ Liệu ", use_container_width=True,
                 final_writer.write(output_pdf_stream)
                 output_pdf_stream.seek(0)
                 
-                st.success(f"🎉 HOÀN TẤT XỬ LÝ! {len(excel_files)} file Excel ({total_rows} dòng). Đóng dấu thành công {stamped_count} trang hóa đơn!")
+                st.success(f"🎉 HOÀN TẤT! Đã quét {len(so_mapping)} mã SO. Đóng dấu thành công {stamped_count} hóa đơn!")
                 st.download_button(
                     label="📥 BẤM VÀO ĐÂY ĐỂ TẢI HÓA ĐƠN HOÀN CHỈNH VỀ MÁY",
                     data=output_pdf_stream,
