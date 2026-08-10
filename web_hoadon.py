@@ -1,5 +1,6 @@
 import streamlit as st
 import io, openpyxl, re, os, unicodedata, tempfile, urllib.request, ssl, zipfile
+from datetime import datetime, timedelta
 from pypdf import PdfReader, PdfWriter
 from reportlab.pdfgen import canvas
 from reportlab.pdfbase import pdfmetrics
@@ -12,7 +13,7 @@ st.markdown("""<style>.stButton>button {background-color: #2E8B57 !important; co
 # --- LOGO & THÔNG TIN ---
 st.title("CÔNG CỤ HỖ TRỢ KÊNH MT PRO")
 st.markdown("""
-### Hỗ trợ note địa chỉ vào hoá đơn (Đa năng - Chống lỗi Mobile)
+### Hỗ trợ note địa chỉ vào hoá đơn (Tự động đặt tên file T+1)
 * 📞 **Liên hệ hỗ trợ:** [0326.019.777](tel:0326019777)
 * 🏭 **Email:** Torres.nam@deheus.vn
 """)
@@ -23,7 +24,7 @@ def chuan_hoa_unicode(text):
     if not text: return ""
     return unicodedata.normalize('NFC', str(text)).replace('\xa0', ' ').strip()
 
-# --- 2. NẠP FONT TIẾNG VIỆT (VƯỢT TƯỜNG LỬA CLOUD) ---
+# --- 2. NẠP FONT TIẾNG VIỆT ---
 @st.cache_resource
 def load_vietnamese_font():
     font_path = os.path.join(tempfile.gettempdir(), "Roboto-Bold.ttf")
@@ -63,14 +64,14 @@ def load_vietnamese_font():
                 pdfmetrics.registerFont(TTFont("FontTiengViet", path))
                 return "FontTiengViet"
             except: continue
-            
     return None
 
-# --- 3. BỘ LỌC TÊN SIÊU THỊ / ĐỊA CHỈ CHUẨN ---
+# --- 3. BỘ LỌC TÊN SIÊU THỊ / ĐỊA CHỈ CHUẨN (GIỮ NGUYÊN GỐC CHO CON DẤU ĐỎ) ---
 def loc_ten_sieu_thi_pro(raw_note):
     text = chuan_hoa_unicode(raw_note)
     if not text: return ""
     
+    # Không gộp chung ở đây nữa, giữ nguyên gốc để đóng dấu chính xác
     typo_map = {"JJIMART": "FUJIMART", "FUJI MART": "FUJIMART", "FUJI ": "FUJIMART ", "WIN MART": "WINMART", "WINMAT": "WINMART", "DELI ": "DELICA ", "THANH DO": "THÀNH ĐÔ", "BRG ": "BRG "}
     for wrong, right in typo_map.items():
         text = re.sub(re.escape(wrong), right, text, flags=re.IGNORECASE)
@@ -155,27 +156,26 @@ def quet_excel_da_nang(exc_file_bytes):
     return so_mapping, total_rows
 
 # --- 5. GIAO DIỆN TẢI FILE ---
-st.markdown("### 1️⃣ Tải dữ liệu lên (Hỗ trợ ZIP cho điện thoại)")
+st.markdown("### 1️⃣ Tải dữ liệu lên (Hỗ trợ tải nhiều file)")
 col1, col2 = st.columns(2)
 with col1:
     excel_files = st.file_uploader("📊 Chọn file Excel (.xlsx)", type=["xlsx"], accept_multiple_files=True)
 with col2:
-    # Đã thêm "zip" vào định dạng hỗ trợ
-    pdf_files = st.file_uploader("📄 Chọn file PDF hoặc ZIP", type=["pdf", "zip"], accept_multiple_files=True)
+    pdf_files = st.file_uploader("📄 Chọn file PDF, ZIP hoặc 7Z", type=["pdf", "zip", "7z"], accept_multiple_files=True)
 
 st.markdown("---")
 
 # --- 6. XỬ LÝ DỮ LIỆU ---
 if st.button("🚀 Bấm Để Xử Lý Dữ Liệu", use_container_width=True, type="primary"):
     if not excel_files or not pdf_files:
-        st.error("⚠️ Vui lòng tải lên ít nhất 1 file Excel và 1 file Hóa Đơn PDF (hoặc ZIP)!")
+        st.error("⚠️ Vui lòng tải lên ít nhất 1 file Excel và 1 file Hóa Đơn PDF (hoặc ZIP/7Z)!")
     else:
         ten_font = load_vietnamese_font()
         if not ten_font:
             st.error("🚨 LỖI CLOUD: Không tải được Font Tiếng Việt. Vui lòng up file Roboto-Bold.ttf lên Github.")
             st.stop()
             
-        with st.spinner("⏳ Đang xử lý dữ liệu và đóng dấu PDF..."):
+        with st.spinner("⏳ Đang giải nén và xử lý dữ liệu..."):
             try:
                 # Quét Excel
                 so_mapping = {}
@@ -185,20 +185,35 @@ if st.button("🚀 Bấm Để Xử Lý Dữ Liệu", use_container_width=True, 
                     so_mapping.update(mapping_part)
                     total_rows += rows_count
 
-                # Lọc file PDF (Bao gồm cả việc bung nén file ZIP)
+                # Lọc và giải nén file PDF, ZIP, 7Z
                 all_pdf_data = []
                 for file_upload in pdf_files:
-                    if file_upload.name.lower().endswith('.zip'):
+                    file_name_lower = file_upload.name.lower()
+                    
+                    if file_name_lower.endswith('.zip'):
                         with zipfile.ZipFile(io.BytesIO(file_upload.read())) as z:
                             for file_info in z.infolist():
-                                # Chỉ lấy file PDF và bỏ qua các file rác của MacOS nếu có
-                                if file_info.filename.lower().endswith('.pdf') and not file_info.filename.startswith('__MACOSX'):
+                                if file_info.filename.lower().endswith('.pdf') and '__MACOSX' not in file_info.filename:
                                     all_pdf_data.append(z.read(file_info.filename))
-                    elif file_upload.name.lower().endswith('.pdf'):
+                                    
+                    elif file_name_lower.endswith('.7z'):
+                        try:
+                            import py7zr
+                        except ImportError:
+                            st.error("🚨 HỆ THỐNG THIẾU THƯ VIỆN ĐỌC FILE .7z")
+                            st.warning("Anh Nam hãy lên GitHub tạo một file tên là `requirements.txt` và ghi chữ `py7zr` vào trong đó nhé!")
+                            st.stop()
+                            
+                        with py7zr.SevenZipFile(io.BytesIO(file_upload.read()), mode='r') as z:
+                            for filename, bio in z.readall().items():
+                                if filename.lower().endswith('.pdf') and '__MACOSX' not in filename:
+                                    all_pdf_data.append(bio.read())
+                                    
+                    elif file_name_lower.endswith('.pdf'):
                         all_pdf_data.append(file_upload.read())
 
                 if not all_pdf_data:
-                    st.error("⚠️ Không tìm thấy file PDF nào hợp lệ để xử lý!")
+                    st.error("⚠️ Không tìm thấy file PDF nào hợp lệ bên trong!")
                     st.stop()
 
                 # Đóng dấu PDF
@@ -234,15 +249,45 @@ if st.button("🚀 Bấm Để Xử Lý Dữ Liệu", use_container_width=True, 
                             
                         final_writer.add_page(page)
                 
+                # -------------------------------------------------------------
+                # TỰ ĐỘNG ĐẶT TÊN FILE T+1 (GOM CHUNG HỆ THỐNG FUJIMART TRÊN TÊN FILE)
+                # -------------------------------------------------------------
+                ngay_mai = datetime.now() + timedelta(days=1)
+                str_ngay_mai = ngay_mai.strftime("%d.%m")
+                
+                str_all_stores = " ".join(so_mapping.values()).upper()
+                danh_sach_brand = []
+                
+                # Gom chung nhóm Fuji, BRG, Delica vào tên "Fuji Mart" cho file xuất ra
+                if any(x in str_all_stores for x in ["FUJIMART", "FUJI", "BRG", "DELICA"]):
+                    danh_sach_brand.append("Fuji Mart")
+                    
+                if "THÀNH ĐÔ" in str_all_stores:
+                    danh_sach_brand.append("Thành Đô")
+                if "WINMART" in str_all_stores:
+                    danh_sach_brand.append("Winmart")
+                if "LOTTE" in str_all_stores:
+                    danh_sach_brand.append("Lotte")
+                if "AEON" in str_all_stores:
+                    danh_sach_brand.append("Aeon")
+                
+                if danh_sach_brand:
+                    # Gộp các siêu thị lại (VD: Fuji Mart - Thành Đô)
+                    brand_str = " - ".join(danh_sach_brand)
+                    ten_file_xuat = f"Hoá đơn {brand_str} ngày {str_ngay_mai}.pdf"
+                else:
+                    ten_file_xuat = f"Hoá đơn ngày {str_ngay_mai}.pdf"
+
+                # Xuất file kết quả
                 output_pdf_stream = io.BytesIO()
                 final_writer.write(output_pdf_stream)
                 output_pdf_stream.seek(0)
                 
                 st.success(f"🎉 HOÀN TẤT! Đã quét {len(so_mapping)} mã SO. Đóng dấu thành công {stamped_count} hóa đơn!")
                 st.download_button(
-                    label="📥 BẤM VÀO ĐÂY ĐỂ TẢI HÓA ĐƠN HOÀN CHỈNH VỀ MÁY",
+                    label=f"📥 TẢI FILE: {ten_file_xuat.upper()}",
                     data=output_pdf_stream,
-                    file_name="TAT_CA_HOA_DON_DE_IN.pdf",
+                    file_name=ten_file_xuat,
                     mime="application/pdf",
                     use_container_width=True
                 )
