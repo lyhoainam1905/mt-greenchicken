@@ -2,3 +2,4 @@ streamlit
 pypdf
 reportlab
 openpyxl
+py7zr
